@@ -6,10 +6,13 @@ import com.trendfeed.backend.entity.ComicEntity;
 import com.trendfeed.backend.service.ComicCommandService;
 import com.trendfeed.backend.service.ComicQueryService;
 import jakarta.validation.Valid;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.*;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 @RestController
 @RequestMapping("/api/comics")
@@ -17,6 +20,10 @@ public class ComicController {
 
     private final ComicCommandService commandService;
     private final ComicQueryService queryService;
+
+    // POST /comics 활성화
+    @Value("${api.comics.create.enabled:false}")
+    private boolean createEnabled;
 
     public ComicController(ComicCommandService commandService, ComicQueryService queryService) {
         this.commandService = commandService;
@@ -26,12 +33,14 @@ public class ComicController {
     /* ========== CREATE (POST) ========== */
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
     public ComicResponse create(@Valid @RequestBody ComicCreateRequest req) {
+        if (!createEnabled) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
         ComicEntity e = commandService.create(req);
         return toResponse(e);
     }
 
     /* ========== LIST (GET) ========== */
-    // 예: /api/comics?sortBy=stars&order=desc&page=0&limit=20&language=TypeScript
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
     public Page<ComicResponse> list(
             @RequestParam(defaultValue = "trending") String sortBy,

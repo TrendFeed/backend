@@ -80,8 +80,11 @@ public class GitHubService {
     @Value("${trend.age.half-life-days:720}")    // 감쇠 계수
     private double ageHalfLifeDays;
 
-    @Value("${trend.threshold:0.10}")            // 임계치
+    @Value("${trend.threshold:20}")            // 임계치
     private double trendThreshold;
+
+    @Value("${trend.growth.k:3.0}")
+    private double growthK;                      //민감도
 
     public GitHubService(
             WebClient githubWebClient,
@@ -324,58 +327,70 @@ public class GitHubService {
         return e;
     }
 
-    /*
-     * score 계산 / stage update / candidate
-     */
+        /*
+    * score 계산 / stage update / candidate 승격
+    * - 최종 점수는 항상 0~100점 저장 (e.setTrendScore)
+    * - 임계치는 trend.threshold(점수)와 비교
+    */
     private void evaluateTrendAndMaybePromote(GitHubEntity e) {
         int curr = orZero(e.getStargazersCount());
         int prev = orZero(e.getPreviousStars());
 
-        // 성장률
+        //초기 성장률
         double growthRate = (prev <= 0)
                 ? 0.0
                 : (double) (curr - prev) / (double) prev;
 
-        // 나이 감쇠
+        //성장률 정규화
+        double growthNorm = 0.0;
+        if (growthRate > 0.0) {
+            growthNorm = 1.0 - Math.exp(-growthK * growthRate);
+            if (growthNorm < 0.0) growthNorm = 0.0;
+            if (growthNorm > 1.0) growthNorm = 1.0;
+        }
+
+        //나이 감쇠
         double agePenaltyFactor = 1.0;
         if (e.getCreatedAt() != null && ageHalfLifeDays > 0) {
             long ageDays = Math.max(
                     0,
                     ChronoUnit.DAYS.between(e.getCreatedAt(), OffsetDateTime.now(ZoneOffset.UTC))
             );
-            // 예) half-life마다 절반
+            // half-life 마다 절반
             agePenaltyFactor = Math.pow(0.5, ageDays / ageHalfLifeDays);
+            if (agePenaltyFactor < 0.0) agePenaltyFactor = 0.0;
+            if (agePenaltyFactor > 1.0) agePenaltyFactor = 1.0;
         }
-        //스코어 계산
-        double score = growthRate
-                * growthWeight
-                * agePenaltyFactor
-                * penaltyWeight;
 
+        double score01 = growthNorm * agePenaltyFactor * growthWeight * penaltyWeight;
+        if (score01 < 0.0) score01 = 0.0;
+        if (score01 > 1.0) score01 = 1.0;
+
+        double score100 = score01 * 100.0;
+
+        //stage 갱신
         int oldStage = (e.getTrendStage() == null) ? 0 : e.getTrendStage();
         int newStage = oldStage;
 
-        // stage update
         if (oldStage == 0 || oldStage == 1) {
-            if (score >= trendThreshold) {
-                newStage = Math.min(2, oldStage + 1); // 승급
+            if (score100 >= trendThreshold) {
+                newStage = Math.min(2, oldStage + 1);     // 승급
             } else if (oldStage == 1) {
-                newStage = 0; // 강등
+                newStage = 0;                              // 강등
             }
         }
 
-        // promote 여부 체크 
         boolean promotedTo2Now = (oldStage < 2 && newStage == 2);
 
-        e.setGrowthRate(growthRate);
-        e.setTrendScore(score);
+        e.setGrowthRate(growthRate);       
+        e.setTrendScore(score100);         
         e.setTrendStage(newStage);
         e.setLastCheckedAt(OffsetDateTime.now(ZoneOffset.UTC));
 
-        // prev갱신
+        // prev 갱신
         e.setPreviousStars(curr);
 
-        // 후보 테이블 삽입
+        //후보테이블 승격
         if (promotedTo2Now) {
             boolean already = candRepo.existsByRepoId(e.getId());
             if (!already) {
@@ -387,6 +402,7 @@ public class GitHubService {
             }
         }
     }
+
 
     private OffsetDateTime parseTime(String iso) {
         if (iso == null) return null;
